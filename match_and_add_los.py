@@ -12,6 +12,8 @@ RAW_PATH = "原始数据.xlsx"
 CLEAN_PATH = "数据_清洗后_切口感染.xlsx"
 OUTPUT_XLSX_PATH = "原始数据_匹配切口感染_含住院时长.xlsx"
 OUTPUT_CSV_PATH = "原始数据_匹配切口感染_含住院时长.csv"
+UNMATCHED_CLEAN_XLSX = "未匹配_清洗数据_待人工核对.xlsx"
+UNMATCHED_CLEAN_CSV = "未匹配_清洗数据_待人工核对.csv"
 
 NS_MAIN = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 NS_REL_DOC = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
@@ -74,7 +76,7 @@ def parse_excel_datetime(v):
     if isinstance(v, datetime):
         return v
     if isinstance(v, (int, float)):
-        base = datetime(1899, 12, 30)  # Excel 1900 date system
+        base = datetime(1899, 12, 30)
         return base + timedelta(days=float(v))
     if isinstance(v, str):
         t = v.strip()
@@ -207,7 +209,6 @@ def match_rows(raw_rows, clean_rows, mapping):
     clean_len = len(clean_rows[0]) if clean_rows else 0
     map_order = [mapping[i] for i in range(clean_len)]
 
-    # Pass 1: exact match on all mapped fields.
     clean_counter = Counter(make_key(r, range(clean_len)) for r in clean_rows)
     raw_exact_key = [make_key(r, map_order) for r in raw_rows]
 
@@ -224,8 +225,7 @@ def match_rows(raw_rows, clean_rows, mapping):
             matched_raw.add(ri)
             matched_clean.add(key_to_clean_idxs[rkey].pop())
 
-    # Pass 2: tolerant fuzzy match on candidates with same core profile.
-    core_cols = [0, 1, 37, 41, 20, 27, 29]  # 性别 年龄 肺部感染 切口感染 手术时长 腔镜 气管造瘘
+    core_cols = [0, 1, 37, 41, 20, 27, 29]
     raw_core_map = defaultdict(list)
     for ri, row in enumerate(raw_rows):
         if ri in matched_raw:
@@ -263,7 +263,6 @@ def match_rows(raw_rows, clean_rows, mapping):
         if best is None:
             continue
         eq, ne = best_score
-        # 防止误匹配：至少匹配 16 个非空字段，且匹配率>=70%
         if ne >= 16 and eq / ne >= 0.70:
             matched_raw.add(best)
             matched_clean.add(ci)
@@ -278,45 +277,26 @@ def write_csv(path: str, headers: list[str], rows: list[list]):
         writer.writerows(rows)
 
 
-def write_xlsx(path: str, headers: list[str], rows: list[list]):
+def write_simple_xlsx(path: str, headers: list[str], rows: list[list]):
     content_types = """<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>
 <Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">
   <Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>
   <Default Extension=\"xml\" ContentType=\"application/xml\"/>
   <Override PartName=\"/xl/workbook.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/>
   <Override PartName=\"/xl/worksheets/sheet1.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>
-  <Override PartName=\"/docProps/core.xml\" ContentType=\"application/vnd.openxmlformats-package.core-properties+xml\"/>
-  <Override PartName=\"/docProps/app.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.extended-properties+xml\"/>
 </Types>"""
-
     rels = """<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>
 <Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">
   <Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"xl/workbook.xml\"/>
-  <Relationship Id=\"rId2\" Type=\"http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties\" Target=\"docProps/core.xml\"/>
-  <Relationship Id=\"rId3\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties\" Target=\"docProps/app.xml\"/>
 </Relationships>"""
-
     wb = """<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>
 <workbook xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\">
   <sheets><sheet name=\"Sheet1\" sheetId=\"1\" r:id=\"rId1\"/></sheets>
 </workbook>"""
-
     wb_rels = """<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>
 <Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">
   <Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet1.xml\"/>
 </Relationships>"""
-
-    core = """<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>
-<cp:coreProperties xmlns:cp=\"http://schemas.openxmlformats.org/package/2006/metadata/core-properties\" xmlns:dc=\"http://purl.org/dc/elements/1.1/\" xmlns:dcterms=\"http://purl.org/dc/terms/\" xmlns:dcmitype=\"http://purl.org/dc/dcmitype/\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">
-  <dc:creator>Codex</dc:creator><cp:lastModifiedBy>Codex</cp:lastModifiedBy>
-  <dcterms:created xsi:type=\"dcterms:W3CDTF\">2026-03-30T00:00:00Z</dcterms:created>
-  <dcterms:modified xsi:type=\"dcterms:W3CDTF\">2026-03-30T00:00:00Z</dcterms:modified>
-</cp:coreProperties>"""
-
-    app = """<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>
-<Properties xmlns=\"http://schemas.openxmlformats.org/officeDocument/2006/extended-properties\" xmlns:vt=\"http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes\">
-  <Application>Microsoft Excel</Application>
-</Properties>"""
 
     def cell_xml(r, c, v):
         ref = f"{idx_to_col(c)}{r}"
@@ -338,18 +318,79 @@ def write_xlsx(path: str, headers: list[str], rows: list[list]):
         "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
         f"<worksheet xmlns=\"{NS_MAIN}\"><dimension ref=\"{dim}\"/>"
         "<sheetViews><sheetView workbookViewId=\"0\"/></sheetViews>"
-        "<sheetFormatPr defaultRowHeight=\"15\"/>"
         f"<sheetData>{''.join(row_xml)}</sheetData></worksheet>"
     )
 
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
         z.writestr("[Content_Types].xml", content_types)
         z.writestr("_rels/.rels", rels)
-        z.writestr("docProps/core.xml", core)
-        z.writestr("docProps/app.xml", app)
         z.writestr("xl/workbook.xml", wb)
         z.writestr("xl/_rels/workbook.xml.rels", wb_rels)
         z.writestr("xl/worksheets/sheet1.xml", sheet)
+
+
+def update_dimension(root: ET.Element, end_col_idx: int, end_row_idx: int):
+    dim = root.find(f"{{{NS_MAIN}}}dimension")
+    if dim is None:
+        dim = ET.SubElement(root, f"{{{NS_MAIN}}}dimension")
+    dim.attrib["ref"] = f"A1:{idx_to_col(end_col_idx)}{end_row_idx}"
+
+
+def rewrite_raw_xlsx_preserve_dates(raw_path: str, output_path: str, matched_raw_idx: list[int], los_values: dict[int, int | str]):
+    with zipfile.ZipFile(raw_path, "r") as zin:
+        file_map = {name: zin.read(name) for name in zin.namelist()}
+        sheet_path = get_sheet_path(zin)
+
+    root = ET.fromstring(file_map[sheet_path])
+    sheet_data = root.find(f"{{{NS_MAIN}}}sheetData")
+    rows = sheet_data.findall(f"{{{NS_MAIN}}}row")
+    if not rows:
+        raise RuntimeError("原始表为空")
+
+    header_row = deepcopy(rows[0])
+    data_row_map = {int(r.attrib.get("r", "0")) - 2: r for r in rows[1:]}
+
+    # 计算原始最后一列
+    header_cells = header_row.findall(f"{{{NS_MAIN}}}c")
+    max_col_idx = max(col_to_idx("".join(ch for ch in c.attrib.get("r", "") if ch.isalpha())) for c in header_cells)
+    los_col_idx = max_col_idx + 1
+
+    # 头部追加“住院时长”
+    header_cell = ET.Element(f"{{{NS_MAIN}}}c", {"r": f"{idx_to_col(los_col_idx)}1", "t": "inlineStr"})
+    is_elem = ET.SubElement(header_cell, f"{{{NS_MAIN}}}is")
+    ET.SubElement(is_elem, f"{{{NS_MAIN}}}t").text = "住院时长"
+    header_row.append(header_cell)
+
+    new_rows = [header_row]
+    for out_r, raw_idx in enumerate(matched_raw_idx, start=2):
+        if raw_idx not in data_row_map:
+            continue
+        row = deepcopy(data_row_map[raw_idx])
+        row.attrib["r"] = str(out_r)
+
+        for c in row.findall(f"{{{NS_MAIN}}}c"):
+            old_ref = c.attrib.get("r", "")
+            col = "".join(ch for ch in old_ref if ch.isalpha())
+            c.attrib["r"] = f"{col}{out_r}"
+
+        los = los_values.get(raw_idx, "")
+        los_cell = ET.Element(f"{{{NS_MAIN}}}c", {"r": f"{idx_to_col(los_col_idx)}{out_r}"})
+        if los != "":
+            ET.SubElement(los_cell, f"{{{NS_MAIN}}}v").text = str(los)
+        row.append(los_cell)
+        new_rows.append(row)
+
+    for old in list(sheet_data):
+        sheet_data.remove(old)
+    for nr in new_rows:
+        sheet_data.append(nr)
+
+    update_dimension(root, los_col_idx, len(new_rows))
+    file_map[sheet_path] = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+
+    with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as zout:
+        for name, content in file_map.items():
+            zout.writestr(name, content)
 
 
 def main():
@@ -364,6 +405,7 @@ def main():
     out_headers = deepcopy(raw_headers) + ["住院时长"]
 
     out_rows = []
+    los_values: dict[int, int | str] = {}
     for ri in matched_raw_idx:
         row = raw_rows[ri]
         admit = parse_excel_datetime(row[admission_idx] if admission_idx < len(row) else None)
@@ -373,18 +415,27 @@ def main():
             d = (dis.date() - admit.date()).days
             if d >= 0:
                 los = d
+        los_values[ri] = los
         out_rows.append(deepcopy(row) + [los])
 
     write_csv(OUTPUT_CSV_PATH, out_headers, out_rows)
-    write_xlsx(OUTPUT_XLSX_PATH, out_headers, out_rows)
+    # 该输出通过保留原始单元格样式来保留日期格式
+    rewrite_raw_xlsx_preserve_dates(RAW_PATH, OUTPUT_XLSX_PATH, matched_raw_idx, los_values)
+
+    unmatched_clean_set = set(range(len(clean_rows))) - set(matched_clean_idx)
+    unmatched_clean_rows = [clean_rows[i] for i in sorted(unmatched_clean_set)]
+    write_csv(UNMATCHED_CLEAN_CSV, clean_headers, unmatched_clean_rows)
+    write_simple_xlsx(UNMATCHED_CLEAN_XLSX, clean_headers, unmatched_clean_rows)
 
     print(f"raw rows: {len(raw_rows)}")
     print(f"clean rows: {len(clean_rows)}")
     print(f"matched raw rows written: {len(matched_raw_idx)}")
     print(f"matched clean rows: {len(matched_clean_idx)}")
-    print(f"unmatched clean rows: {len(clean_rows) - len(matched_clean_idx)}")
-    print(f"output xlsx: {OUTPUT_XLSX_PATH}")
+    print(f"unmatched clean rows: {len(unmatched_clean_rows)}")
+    print(f"output xlsx (preserved date format): {OUTPUT_XLSX_PATH}")
     print(f"output csv: {OUTPUT_CSV_PATH}")
+    print(f"unmatched clean xlsx: {UNMATCHED_CLEAN_XLSX}")
+    print(f"unmatched clean csv: {UNMATCHED_CLEAN_CSV}")
 
 
 if __name__ == "__main__":
